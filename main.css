@@ -1,0 +1,41 @@
+.navbar {
+	position: sticky;
+	background: #888;
+	width: 100%;
+	overflow: hidden;
+}
+
+.navbar a {
+	background: rgba(20, 20, 20, 0.25);
+	float: left;
+	padding: 0.75rem;
+	text-decoration: none;
+	font-size: 1.25rem;
+	color: #ddd;
+	margin: 0;
+}
+
+@keyframes my-hover {
+	0% {
+		border-radius: 0px;
+		background: rgba(20, 20, 20, 0.25);
+	}
+	100% {
+		border-radius: 0.5rem;
+		background: rgba(20, 20, 20, 0.80);
+	}
+}
+
+.navbar a:hover {
+	animation-name: my-hover;
+	animation-duration: 0.40s;
+	animation-fill-mode: forwards;
+}
+
+body {
+	margin: 0;
+}
+
+@media only screen and (max-width: 720px) {
+
+}
