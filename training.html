@@ -1,0 +1,46 @@
+<!Doctype html> 
+<html>
+	<head>
+		<title>Training Tracker</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<link rel="stylesheet" href="/static/css/main.css">
+		<link rel="stylesheet" href="/static/css/training.css">
+		<link rel="manifest" href="/training_manifest.json"> 
+	</head>
+	<body>
+		<div style="width=100%; background-color: yellow;"> 
+		<h1 style="margin:0px; padding: 0.5rem;">This page is in development</h1> 
+		</div>
+		<div>
+			<h1>Current Workout</h1>
+			<table id="SessionExerciseTable">
+				<tr>
+					<th>Exercise</th>
+					<th>Weigth</th>
+					<th>Reps</th>
+					<th>Break</th>
+					<th>Comments</th>
+					<th></th>
+				</tr>
+			</table>
+
+			<select id="MainExerciseSelector">
+				<option value="undefined">Exercices</option>
+			</select>
+			<button id="AddExerciseToTrainingButton" class="blue">Add</button>
+			<br>
+			<button id="FinishWorkoutButton" class="green">Finish Workout</button>
+		</div>
+		<div>
+			<h1>Exercises</h1>
+			<input id="NewNamedExerciseInput"></input>
+			<button id="AddNamedExerciseButton" class="blue">Add</button>
+		</div>
+		<div>
+			<h1>Previous Workout</h1>
+			<div id="PreviousWorkoutList"></div>
+		</div>
+
+		<script type="text/javascript" src="/static/js/training.js" defer></script>
+	</body>
+</html>

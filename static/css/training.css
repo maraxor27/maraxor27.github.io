@@ -1,0 +1,31 @@
+@keyframes button-hover {
+	0% {
+		border-radius: 0.25rem;
+		filter: brightness(1.0);
+	}
+	100% {
+		border-radius: 0.6rem;
+		filter: brightness(0.8);
+	}
+}
+button {
+	border: none;
+	padding: 0.5rem 0.75rem;
+	border-radius: 0.25rem;
+}
+button:hover {
+	animation-name: button-hover;
+	animation-duration: 0.20s;
+	animation-fill-mode: forwards;
+	cursor: pointer;
+}
+
+button.red {
+	background-color: #f55;
+}
+button.green {
+	background-color: #5f5;
+}
+button.blue {
+	background-color: #55f;
+}

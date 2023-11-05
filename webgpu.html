@@ -1,0 +1,212 @@
+<!Doctype html> 
+<html>
+  <head>
+    <title>Simon Laureti</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="static/css/main.css"> 
+  </head>
+  <body onload="init()">
+    <div class="navbar">
+      <a href="index.html">Home</a>
+      <a href="projects.html">Projects</a>
+      <a href="webgpu.html">Web GPU</a>
+      <a href="about.html">About</a>
+    </div>
+    <canvas id="gpuCanvas" width=500 height=500></canvas>
+    <script>
+      // https://webgpufundamentals.org/webgpu/lessons/webgpu-inter-stage-variables.html
+      const shaders = `
+        struct Camera {
+          projection: mat4x4f,
+          view: mat4x4f,
+          position: vec3f,
+        };
+
+        @group(0) @binding(0) var<uniform> camera: Camera;
+
+        struct VertexOut {
+          @builtin(position) position : vec4f,
+        }
+
+        @vertex
+        fn vertex_main(@location(0) position: vec4f) -> VertexOut
+        {
+          var output : VertexOut;
+          // Vertex modification can be written here
+          output.position = position;
+          return output;
+        }
+
+        // In between the two shaders, the GPU does interpolation of all points. It is important to note that the position are float ranging from 0 to 1000 in x and 0 to 600 in y. (See width and height of canvas). As a result, the position can only be visualized when divided by 0.001 to ensure that the resulting value will be between 0 and 1 which is the valid range for color data. 
+
+        
+
+        @fragment
+        fn fragment_main(fsInput : VertexOut) -> @location(0) vec4f
+        {
+          let c1 = vec4f(1, 0, 0, 1);
+          let c2 = vec4f(0, 1, 1, 1);
+          let grid = vec2u(fsInput.position.xy) / 8;
+          let checker = (grid.x + grid.y) % 2 == 1;
+          return vec4f(fsInput.position.x / 1000, fsInput.position.y / 1000, 0, 1);// select(c1, c2, checker);
+        }
+      `;
+      async function init() {
+        if (!navigator.gpu) {
+          throw Error("WebGPU not supported.");
+        }
+
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          throw Error("Couldn't request WebGPU adapter.");
+        }
+
+        const device = await adapter.requestDevice();
+        
+        const shaderModule = device.createShaderModule({
+          code: shaders,
+        });
+
+        const canvas = document.querySelector("#gpuCanvas");
+        const context = canvas.getContext("webgpu");
+
+        context.configure({
+          device: device,
+          format: navigator.gpu.getPreferredCanvasFormat(),
+          alphaMode: "premultiplied",
+        });
+
+        const vertices = new Float32Array([
+        //x, y, z, w,
+           1, 1, 0, 1,
+          -1, 1, 0, 1, 
+          -1,-1, 0, 1,
+
+           1, 1, 0, 1,
+           1,-1, 0, 1, 
+          -1,-1, 0, 1,
+        ]);
+
+        const bindGroupLayout = device.createBindGroupLayout({
+          entries: [{
+            binding: 0, // camera uniform
+            visibility: GPUShaderStage.VERTEX,
+            buffer: {},
+          }]
+        })
+
+        const pipelineLayout = device.createPipelineLayout({
+          bindGroupLayouts: [
+            bindGroupLayout, // @group(0)
+          ]
+        })
+
+        const cameraBuffer = device.createBuffer({
+          size: 144,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+        });
+
+        const bindGroup = device.createBindGroup({
+          layout: bindGroupLayout,
+          entries: [{
+            binding: 0,
+            resource: { buffer: cameraBuffer },
+          }]
+        })
+
+        projectionMatrix = [
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+        ];
+        viewMatrix = [
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+        ];
+        cameraPosition = [
+          0, 0, 0
+        ];
+
+        const cameraArray = new Float32Array(36);
+        cameraArray.set(projectionMatrix, 0);
+        cameraArray.set(viewMatrix, 16);
+        cameraArray.set(cameraPosition, 32);
+
+        device.queue.writeBuffer(cameraBuffer, 0, cameraArray);
+
+        const vertexBuffer = device.createBuffer({
+          size: vertices.byteLength, // make it big enough to store vertices in
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+
+        device.queue.writeBuffer(vertexBuffer, 0, vertices, 0, vertices.length);
+
+        // Vertex Buffer Item Layout 
+        const vertexBuffers = [
+          {
+            attributes: [
+              { // first vertex attribute: position 
+                shaderLocation: 0, // position
+                offset: 0,
+                format: "float32x4",
+              },
+            ],
+            arrayStride: 16, // Items 
+            stepMode: "vertex",
+          },
+        ];
+
+
+        const pipelineDescriptor = {
+          vertex: {
+            module: shaderModule,
+            entryPoint: "vertex_main",
+            buffers: vertexBuffers,
+          },
+          fragment: {
+            module: shaderModule,
+            entryPoint: "fragment_main",
+            targets: [
+              {
+                format: navigator.gpu.getPreferredCanvasFormat(),
+              },
+            ],
+          },
+          primitive: {
+            topology: "triangle-list",
+          },
+          layout: pipelineLayout, // "auto",
+        };
+
+        const renderPipeline = device.createRenderPipeline(pipelineDescriptor);
+
+        const commandEncoder = device.createCommandEncoder();
+
+        const clearColor = { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+
+        const renderPassDescriptor = {
+          colorAttachments: [
+            {
+              clearValue: clearColor,
+              loadOp: "clear",
+              storeOp: "store",
+              view: context.getCurrentTexture().createView(),
+            },
+          ],
+        };
+
+        const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+        passEncoder.setPipeline(renderPipeline);
+        passEncoder.setVertexBuffer(0, vertexBuffer);
+        passEncoder.setBindGroup(0, bindGroup)
+        passEncoder.draw(6); // draw the 6 vertex in the vertexBuffer 
+        passEncoder.end();
+
+        device.queue.submit([commandEncoder.finish()]);
+      }
+    </script>
+  </body>
+</html>

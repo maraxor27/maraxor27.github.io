@@ -1,0 +1,15 @@
+{
+	"name": "Training Tracker",
+	"short_name": "Training",
+	"start_url": "training.html",
+	"display": "standalone",
+	"background_color": "#fff",
+	"description": "Training Tracker is a webapp that can be used to track your training",
+	"icons": [
+		{
+			"src": "static/img/training_icon.png",
+			"sizes": "360x360",
+			"type": "image/png"
+		}
+	]
+}

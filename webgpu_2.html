@@ -1,0 +1,541 @@
+<!Doctype html> 
+<html>
+  <head>
+    <title>Simon Laureti</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="static/css/main.css"> 
+  </head>
+  <body onload="init()">
+    <div class="navbar">
+      <a href="index.html">Home</a>
+      <a href="projects.html">Projects</a>
+      <a href="webgpu.html">Web GPU</a>
+      <a href="about.html">About</a>
+    </div>
+    <canvas id="gpuCanvas" width=2000 height=1000></canvas>
+    <script>
+      function sleep(ms) {
+          return new Promise(resolve => setTimeout(resolve, ms));
+      }
+
+      // https://webgpufundamentals.org/webgpu/lessons/webgpu-inter-stage-variables.html
+      const vertex_shader = `
+        struct VertexOut {
+          @builtin(position) position : vec4f,
+        }
+
+        @vertex
+        fn main(@location(0) position: vec4f) -> VertexOut
+        {
+          var output : VertexOut;
+          // Vertex modification can be written here
+          output.position = position;
+          return output;
+        }
+       `
+
+      // In between the two shaders, the GPU does interpolation of all points. It is important to note that the position are float ranging from 0 to 1000 in x and 0 to 600 in y. (See width and height of canvas). As a result, the position can only be visualized when divided by 1000 to ensure that the resulting value will be between 0 and 1 which is the valid range for color data. 
+      const fragment_shader = `
+        struct Camera {
+          projection: mat4x4f,
+          view: mat4x4f,
+          position: vec3f,
+        };
+
+        struct MaterialProperties {
+          color: vec3f,
+          emission_strength: f32,
+          buf: vec3f,
+          smoothness: f32,
+        };
+
+        struct Sphere {
+          position: vec3f,
+          radius: f32,
+          material: MaterialProperties,
+        };
+        
+        struct Line {
+          position: vec3f,
+          direction: vec3f,
+        };
+
+        @group(0) @binding(0) 
+        var<uniform> camera: Camera;
+
+        @group(0) @binding(1)
+        var<uniform> window: vec2<f32>; 
+
+        @group(0) @binding(2) 
+        var<storage, read> spheres: array<Sphere>; 
+
+        fn in_sphere(sphere: Sphere, pos: vec4f) -> bool {
+          return distance(pos.xy, sphere.position.xy) <= sphere.radius;
+        }
+
+        struct HitInfo {
+          position: vec3f,
+          normal: vec3f,
+          unit: f32,
+          found: bool,
+          material: MaterialProperties,
+        };
+
+        fn line_x_sphere(line: Line, sphere: Sphere) -> HitInfo {
+          var result = HitInfo(
+            vec3f(0,0,0), 
+            vec3f(0,0,0), 
+            0, 
+            false, 
+            MaterialProperties(
+              vec3f(0,0,0), 
+              0,
+              vec3f(0,0,0),
+              0
+            )
+          );
+
+          var P: vec3f = line.position;
+          var U: vec3f = line.direction;
+          var C: vec3f = sphere.position;
+          var r: f32 = sphere.radius;
+
+          // line equation: P + Ut
+          // sphere equation: (X - C) * (X - C) == r**2
+
+          // (P + Ut - C) * (P + Ut - C) - r**2 == 0
+          // (U*U)t**2 + (2 * U * (P-C))t + ((P-C)*(P-C) - r**2)
+          //   a                b                    c
+
+          var a: f32 = dot(U, U);
+          var b: f32 = 2 * dot(U, (P - C));
+          var c: f32 = dot((P - C), (P - C)) - r*r;
+
+          var d: f32 = (b * b - 4 * a * c);
+          if (d >= 0) {
+            var t1: f32 = (-b + sqrt(d)) / (2 * a);
+            var t2: f32 = (-b - sqrt(d)) / (2 * a);
+            var t = select(t1, t2, t1 > t2);
+            if (t > 0) {
+              var inter_position: vec3f = line.position + line.direction * t;
+              var inter_normal: vec3f = normalize(inter_position - sphere.position);
+              
+              result.position = inter_position;
+              result.normal = inter_normal; 
+              result.unit = t;
+              result.found = true;
+              result.material = sphere.material;
+            }
+          }
+          return result;
+        }
+
+        fn draw_ray(pixel_coord: vec3f, fov: f32) -> Line {
+          var half_width: f32 = window.x / 2;
+          var camera_position = vec3f(half_width, window.y / 2, -half_width / tan(radians(fov/2)));
+          
+          var u: vec3f = normalize(pixel_coord - camera_position);
+          return Line(camera.position, u);
+        }
+
+        fn random_value(rng_state: ptr<function,u32>) -> f32 {
+          *rng_state = *rng_state * 747796405 + 2891336453;
+          var result: u32 = ((*rng_state >> ((*rng_state >> 28) + 4)) ^ *rng_state) * 277803737;
+          result = (result >> 22) ^ result;
+          return f32(result) / 4294967295.0;
+        }
+
+        fn random_value_normal_distribution(rng_state: ptr<function,u32>) -> f32 {
+          var theta = 2 * 3.1415926 * random_value(rng_state);
+          var rho = sqrt(-2 * log(random_value(rng_state)));
+          return rho * cos(theta);
+        }
+
+        struct RandomDirectionResult {
+          rand: vec3f,
+          next_state: u32,
+        };
+
+        fn random_direction(rng_state: ptr<function,u32>) -> vec3f {
+          var direction = vec3f(0,0,0);
+
+          direction.x = random_value_normal_distribution(rng_state) * 2 - 1;
+          direction.y = random_value_normal_distribution(rng_state) * 2 - 1;
+          direction.z = random_value_normal_distribution(rng_state) * 2 - 1;
+          direction = normalize(direction);
+
+          // direction *= sign(dot(direction, normal));
+          
+          return direction;
+        }
+
+        fn specular_reflection(direction: vec3f, normal: vec3f) -> vec3f {
+          var d: vec3f = direction;
+          var n: vec3f = normal;
+          return d - 2 * dot(d,n) * n;
+        }
+
+        fn collides(ray: Line) -> HitInfo {
+          var i: u32 = 0;
+          var closest: HitInfo;
+          closest.found = false;
+          loop {
+            if (i < arrayLength(&spheres)) {
+              var result: HitInfo = line_x_sphere(ray, spheres[i]);
+              if (result.found) {
+                if (!closest.found) {
+                  closest = result;
+                } else if (closest.unit > result.unit) {
+                  closest = result;
+                }
+              }
+              i++;
+            } else {
+              break;
+            }
+          }
+          return closest;
+        }
+
+        fn trace_ray(ray: Line, rng_state: ptr<function, u32>) -> vec3f {
+          var ray_: Line = ray;
+          
+          ray_.direction += random_direction(rng_state) / 1000;
+          ray_.position += random_direction(rng_state) / 2;
+
+          var incoming_light: vec3f = vec3f(0,0,0);
+          var ray_color: vec3f = vec3f(1,1,1);
+
+          var hitInfo: HitInfo;
+          var material: MaterialProperties;
+          var bounce: u32 = 0;
+          loop {
+            if (bounce >= 4) {
+              break;
+            }
+
+            hitInfo = collides(ray_);
+
+            if (!hitInfo.found) { 
+              // incoming_light += vec3f(0.1, 0.1, 0.1);
+              break;
+            }
+
+            ray_.position = hitInfo.position;
+            var diffused = normalize(hitInfo.normal + random_direction(rng_state));           
+            var specular = specular_reflection(ray_.direction, hitInfo.normal);
+
+            material = hitInfo.material;
+            if (false) {
+              ray_.direction = diffused;
+            } else {
+              var smoothness: f32 = material.smoothness;
+              ray_.direction = normalize(diffused * (1 - smoothness) + specular * smoothness);
+            }
+            var emitted_light: vec3f = material.emission_strength * material.color;
+            incoming_light += emitted_light * ray_color;
+            ray_color *= material.color;
+
+            bounce++;
+          }
+          return incoming_light;
+        }
+
+        struct VertexOut {
+          @builtin(position) position : vec4f,
+        }
+
+        // fsInput.position.x ranges from [0, width]
+        // fsInput.position.y ranges from [0, height]
+        @fragment
+        fn main(fsInput : VertexOut) -> @location(0) vec4f
+        {
+          const ray_count: u32 = 100;
+          var ray: Line = draw_ray(fsInput.position.xyz, 100);
+          var rng_state_: u32 = u32((fsInput.position.x) * (ray.direction.y - 1000) * (fsInput.position.y - 2000));
+          
+          var i: u32 = 0;
+          var ray_color: vec3f = vec3f(0,0,0);
+          loop {
+            if (i >= ray_count) {
+              break;
+            }
+            ray_color += trace_ray(ray, &rng_state_);
+
+            i++;
+          };
+          return vec4f(ray_color / f32(ray_count), 1);
+        }
+      `;
+      async function init() {
+        if (!navigator.gpu) {
+          throw Error("WebGPU not supported.");
+        }
+
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+          throw Error("Couldn't request WebGPU adapter.");
+        }
+
+        const device = await adapter.requestDevice();
+        
+        const vertex_module = device.createShaderModule({
+          code: vertex_shader,
+        });
+
+        const fragment_module = device.createShaderModule({
+          code: fragment_shader,
+        });
+
+        const canvas = document.querySelector("#gpuCanvas");
+        const context = canvas.getContext("webgpu");
+
+        context.configure({
+          device: device,
+          format: navigator.gpu.getPreferredCanvasFormat(),
+          alphaMode: "premultiplied",
+        });
+
+        const bindGroupLayout = device.createBindGroupLayout({
+          entries: [{
+            binding: 0, // camera uniform
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: {},
+          },{
+            binding: 1, // camera uniform
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: {},
+          },{
+            binding: 2, // spheres uniform
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: {
+              type: "read-only-storage"
+            },
+          }]
+        })
+
+        const pipelineLayout = device.createPipelineLayout({
+          bindGroupLayouts: [
+            bindGroupLayout, // @group(0)
+          ]
+        })
+
+        projectionMatrix = [
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+        ];
+        viewMatrix = [
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+        ];
+        cameraPosition = [
+          0, 0, 0
+        ];
+
+        const cameraArray = new Float32Array(36);
+        cameraArray.set(projectionMatrix, 0);
+        cameraArray.set(viewMatrix, 16);
+        cameraArray.set([500,250,-400], 32);
+
+        const cameraBuffer = device.createBuffer({
+          size: cameraArray.byteLength,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+        });
+
+        const windowArray = new Float32Array(2);
+        windowArray.set([2000, 1000], 0);
+
+        const windowBuffer = device.createBuffer({
+          size: windowArray.byteLength,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+        });
+
+        const sphere_size = 12;
+        const spheresArray = new Float32Array(sphere_size * 6);
+        function set_sphere(array, index, properties) {
+          array.set(properties.position, index * sphere_size);
+          array[index * sphere_size + 3] = properties.radius;
+          array.set(properties.color, index * sphere_size + 4);
+          array[index * sphere_size + 7] = properties.emission_strength;
+          array[index * sphere_size + 11] = properties.smoothness;
+        }
+        set_sphere(spheresArray, 0, {
+          position: [500, 250, 50], 
+          radius: 100,
+          color: [0.7,0.7,0.7],
+          emission_strength: 0, 
+          smoothness:1,
+        });
+        set_sphere(spheresArray, 1, {
+          position: [375, 300, -75],
+          radius: 50,
+          color: [0.2,0.6,0.2],
+          emission_strength: 0,
+          smoothness: 0.5,
+        });
+        set_sphere(spheresArray, 2, {
+          position: [250, 310, 0],
+          radius: 40,
+          color: [0.1,0.1,1],
+          emission_strength: 0,
+          smoothness: 0.2,
+        });
+        set_sphere(spheresArray, 3, {
+          position: [-1000, 0, 1500], 
+          radius: 1500,
+          color: [1,1,1],
+          emission_strength: 1,
+          smoothness: 0,
+        });
+        set_sphere(spheresArray, 4, {
+          position: [500, 10000, 100],
+          radius: 9650,
+          color: [0.5,0.2,0.8],
+          emission_strength: 0.1,
+          smoothness: 0.5,
+        });
+        set_sphere(spheresArray, 5, {
+          position: [1000, -200, -1500],
+          radius: 750,
+          color: [1,0.6,0],
+          emission_strength: 1,
+          smoothness: 0,
+        });
+        
+
+
+        const spheresBuffer = device.createBuffer({
+          size: spheresArray.byteLength,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+        });
+
+        const bindGroup = device.createBindGroup({
+          layout: bindGroupLayout,
+          entries: [
+            {binding: 0, resource: { buffer: cameraBuffer }}, 
+            {binding: 1, resource: { buffer: windowBuffer }},
+            {binding: 2, resource: { buffer: spheresBuffer }}
+          ]
+        });
+
+        
+        const vertices = new Float32Array([
+        // x, y, z, w,
+           1, 1, 0, 1,
+          -1, 1, 0, 1, 
+          -1,-1, 0, 1,
+
+           1, 1, 0, 1,
+           1,-1, 0, 1, 
+          -1,-1, 0, 1,
+        ]);
+
+        const vertexBuffer = device.createBuffer({
+          size: vertices.byteLength, // make it big enough to store vertices in
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+
+       
+
+        // Vertex Buffer Item Layout 
+        const vertexBuffers = [
+          {
+            attributes: [
+              { // first vertex attribute: position 
+                shaderLocation: 0, // position
+                offset: 0,
+                format: "float32x4",
+              },
+            ],
+            arrayStride: 16, // Items 
+            stepMode: "vertex",
+          },
+        ];
+
+
+        const pipelineDescriptor = {
+          vertex: {
+            module: vertex_module,
+            entryPoint: "main",
+            buffers: vertexBuffers,
+          },
+          fragment: {
+            module: fragment_module,
+            entryPoint: "main",
+            targets: [
+              {
+                format: navigator.gpu.getPreferredCanvasFormat(),
+              },
+            ]
+          },
+          primitive: {
+            topology: "triangle-list",
+          },
+          layout: pipelineLayout, // "auto",
+        };
+
+        const renderPipeline = device.createRenderPipeline(pipelineDescriptor);
+
+        
+
+        const clearColor = { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+
+        document.addEventListener("keypress", (event) => {
+          const speed = 10;
+          switch(event.code) {
+            case "Numpad8":
+              cameraArray[34] += speed;
+              break;
+            case "Numpad2": 
+              cameraArray[34] -= speed;
+              break;
+            case "Numpad4":
+              cameraArray[32] -= speed;
+              break;
+            case "Numpad6":
+              cameraArray[32] += speed;
+              break;
+            case "Numpad9":
+              cameraArray[33] -= speed;
+              break;
+            case "Numpad3":
+              cameraArray[33] += speed;
+              break;
+          }
+        })
+        while(true) {          
+          const renderPassDescriptor = {
+            colorAttachments: [
+              {
+                clearValue: clearColor,
+                loadOp: "clear",
+                storeOp: "store",
+                view: context.getCurrentTexture().createView(),
+              },
+            ],
+          };
+          const commandEncoder = device.createCommandEncoder();
+          const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+
+          passEncoder.setPipeline(renderPipeline);
+          passEncoder.setVertexBuffer(0, vertexBuffer);
+          passEncoder.setBindGroup(0, bindGroup);
+          passEncoder.draw(6); // draw the 6 vertex in the vertexBuffer 
+          passEncoder.end();
+
+          device.queue.writeBuffer(cameraBuffer, 0, cameraArray);
+          device.queue.writeBuffer(windowBuffer, 0, windowArray);
+          device.queue.writeBuffer(spheresBuffer, 0, spheresArray);
+          device.queue.writeBuffer(vertexBuffer, 0, vertices, 0, vertices.length);
+
+          device.queue.submit([commandEncoder.finish()]);    
+          await sleep(100);
+        }
+      }
+    </script>
+  </body>
+</html>
